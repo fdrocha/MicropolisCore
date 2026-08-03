@@ -11,6 +11,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"micropolis": "tsx cli/entry.ts",
+		"run-sim": "tsx cli/run_sim.js",
 		"test": "vitest run",
 		"test:watch": "vitest"
 	},

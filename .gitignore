@@ -83,3 +83,7 @@ packages/*/dist/
 
 # Temp directory
 temp/
+
+.claude/
+apps/micropolis/sim-runs/
+**/__pycache__/
