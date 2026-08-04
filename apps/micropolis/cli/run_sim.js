@@ -97,9 +97,15 @@ const argv = yargs(hideBin(process.argv))
 	.option('ticks', {
 		alias: 't',
 		type: 'number',
-		default: 100,
-		describe: 'Number of simTick() calls to run'
+		describe: 'Number of simTick() calls to run (default: 100 if --turns is not given)'
 	})
+	.option('turns', {
+		type: 'number',
+		describe:
+			'Number of in-game turns to run instead of --ticks (1 turn = 16 ticks = 1 cityTime increment — ' +
+			'see simulate.cpp). Without --log-every-tick this logs exactly N rows. Mutually exclusive with --ticks.'
+	})
+	.conflicts('ticks', 'turns')
 	.option('output-base-dir', {
 		alias: 'o',
 		type: 'string',
@@ -133,10 +139,16 @@ const argv = yargs(hideBin(process.argv))
 			'Seed the RNG right after loadCity() (applied every run — a fixed default keeps output paths and results reproducible). Caveat: this makes the raw RNG draws reproducible, but the simulation itself has other unexplained non-determinism — repeated runs with the same seed still diverge slightly.'
 	})
 	.example('$0 --city haight --ticks 500', 'Run haight for 500 ticks')
+	.example('$0 --city haight --turns 500', 'Run haight for 500 turns (8000 ticks), logging exactly 500 rows')
 	.help()
 	.alias('help', 'h')
 	.strict()
 	.parseSync();
+
+// A turn is one cityTime increment — 16 ticks (see simulate.cpp's 16-phase
+// phaseCycle) — so --turns N logs exactly N rows without --log-every-tick.
+const TICKS_PER_TURN = 16;
+const totalTicks = argv.turns !== undefined ? argv.turns * TICKS_PER_TURN : argv.ticks ?? 100;
 
 // Unwraps embind enum-style values ({value: N}) down to a plain number;
 // passes plain numbers/strings/booleans through untouched.
@@ -350,7 +362,7 @@ async function main() {
 	// silently overwritten.
 	micropolis.seedRandom(argv.seed);
 
-	console.log(`Loaded ${argv.city} — running ${argv.ticks} ticks, writing stats to ${statsPath} and events to ${logPath}`);
+	console.log(`Loaded ${argv.city} — running ${totalTicks} ticks, writing stats to ${statsPath} and events to ${logPath}`);
 	if (!argv.logEveryTick) {
 		console.log('Logging one row per cityTime value (pass --log-every-tick to log every tick instead).');
 	}
@@ -370,7 +382,7 @@ async function main() {
 		rowsWritten++;
 	}
 
-	for (let tick = 1; tick <= argv.ticks; tick++) {
+	for (let tick = 1; tick <= totalTicks; tick++) {
 		tickRef.current = tick;
 		micropolis.simTick();
 		if (shouldLog(micropolis)) {
