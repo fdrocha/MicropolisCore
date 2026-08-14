@@ -159,36 +159,43 @@ function unwrap(value) {
 
 function snapshot(micropolis, tick) {
 	return {
-		tick,
-		cityName: String(micropolis.cityName ?? ''),
-		cityTime: micropolis.cityTime,
-		cityYear: micropolis.cityYear,
-		cityMonth: micropolis.cityMonth,
-		cityClass: unwrap(micropolis.cityClass),
-		cityScore: micropolis.cityScore,
-		cityScoreDelta: micropolis.cityScoreDelta,
-		cityPop: micropolis.cityPop,
-		cityPopDelta: micropolis.cityPopDelta,
-		totalFunds: micropolis.totalFunds,
-		cashFlow: micropolis.cashFlow,
-		cityTax: micropolis.cityTax,
-		trafficAverage: micropolis.trafficAverage,
-		pollutionAverage: micropolis.pollutionAverage,
-		crimeAverage: micropolis.crimeAverage,
-		landValueAverage: micropolis.landValueAverage,
-		resPop: micropolis.resPop,
-		comPop: micropolis.comPop,
-		indPop: micropolis.indPop,
-		roadTotal: micropolis.roadTotal,
-		railTotal: micropolis.railTotal,
-		policeStationPop: micropolis.policeStationPop,
-		fireStationPop: micropolis.fireStationPop,
-		seaportPop: micropolis.seaportPop,
-		airportPop: micropolis.airportPop,
-		coalPowerPop: micropolis.coalPowerPop,
-		nuclearPowerPop: micropolis.nuclearPowerPop,
-		poweredZoneCount: micropolis.poweredZoneCount,
-		unpoweredZoneCount: micropolis.unpoweredZoneCount
+		tick, // number of simTick() calls made so far (script-side counter, not an engine field)
+		cityName: String(micropolis.cityName ?? ''), // name of the loaded city
+		cityTime: micropolis.cityTime, // in-game clock, advances once per 16-tick phase cycle
+		cityYear: micropolis.cityYear, // current in-game year
+		cityMonth: micropolis.cityMonth, // current in-game month
+		cityClass: unwrap(micropolis.cityClass), // city size classification (village/town/city/capital/metropolis/megalopolis)
+		cityScore: micropolis.cityScore, // overall city evaluation score
+		cityScoreDelta: micropolis.cityScoreDelta, // change in city score since last evaluation
+		cityPop: micropolis.cityPop, // total city population
+		cityPopDelta: micropolis.cityPopDelta, // change in population since last evaluation
+		totalFunds: micropolis.totalFunds, // city treasury balance
+		cashFlow: micropolis.cashFlow, // net income/expense this budget cycle
+		cityTax: micropolis.cityTax, // current property tax rate (0-20)
+		cityTaxAverage: micropolis.cityTaxAverage, // time-weighted average tax rate over the current budget cycle
+		trafficAverage: micropolis.trafficAverage, // city-wide average traffic density
+		pollutionAverage: micropolis.pollutionAverage, // city-wide average pollution level
+		crimeAverage: micropolis.crimeAverage, // city-wide average crime level
+		landValueAverage: micropolis.landValueAverage, // city-wide average land value
+		resPop: micropolis.resPop, // residential zone population
+		comPop: micropolis.comPop, // commercial zone population
+		indPop: micropolis.indPop, // industrial zone population
+		roadTotal: micropolis.roadTotal, // total count of road tiles
+		railTotal: micropolis.railTotal, // total count of rail tiles
+		policeStationPop: micropolis.policeStationPop, // number of police stations
+		fireStationPop: micropolis.fireStationPop, // number of fire stations
+		hospitalPop: micropolis.hospitalPop, // number of hospitals
+		stadiumPop: micropolis.stadiumPop, // number of stadiums
+		seaportPop: micropolis.seaportPop, // number of seaports
+		airportPop: micropolis.airportPop, // number of airports
+		coalPowerPop: micropolis.coalPowerPop, // number of coal power plants
+		nuclearPowerPop: micropolis.nuclearPowerPop, // number of nuclear power plants
+		poweredZoneCount: micropolis.poweredZoneCount, // count of zone tiles currently receiving power
+		unpoweredZoneCount: micropolis.unpoweredZoneCount, // count of zone tiles currently lacking power
+		externalMarket: micropolis.externalMarket, // external market demand multiplier for industry
+		roadEffect: micropolis.roadEffect, // road funding effectiveness multiplier (funding level -> service quality)
+		policeEffect: micropolis.policeEffect, // police funding effectiveness multiplier
+		fireEffect: micropolis.fireEffect // fire funding effectiveness multiplier
 	};
 }
 
