@@ -112,8 +112,8 @@ const argv = yargs(hideBin(process.argv))
 		default: './sim-runs/',
 		describe:
 			'Base directory to write output under. Stats go to ' +
-			'<output-base-dir>/<city>/log-seed<seed>[-nodisasters].jsonl, with the event log next to it ' +
-			'as events-seed<seed>[-nodisasters].jsonl.'
+			'<output-base-dir>/<city>/log-seed<seed>-[no]disasters.jsonl, with the event log next to it ' +
+			'as events-seed<seed>-[no]disasters.jsonl.'
 	})
 	.option('log-every-tick', {
 		type: 'boolean',
@@ -316,10 +316,10 @@ function makeLoggingCallback(engine, micropolis, getTick, logStream, verbose) {
 }
 
 // Builds the stats and event log paths for this run:
-//   <outputBaseDir>/<city>/log-seed<seed>[-nodisasters].jsonl
-//   <outputBaseDir>/<city>/events-seed<seed>[-nodisasters].jsonl
+//   <outputBaseDir>/<city>/log-seed<seed>[-no]disasters.jsonl
+//   <outputBaseDir>/<city>/events-seed<seed>[-no]disasters.jsonl
 function outputPathsFor(outputBaseDir, city, seed, disastersEnabled) {
-	const suffix = disastersEnabled ? '' : '-nodisasters';
+	const suffix = disastersEnabled ? '-disasters' : '-nodisasters';
 	const dir = path.join(outputBaseDir, city);
 	return {
 		dir,
