@@ -173,6 +173,8 @@ function snapshot(micropolis, tick) {
 		cashFlow: micropolis.cashFlow, // net income/expense this budget cycle
 		cityTax: micropolis.cityTax, // current property tax rate (0-20)
 		cityTaxAverage: micropolis.cityTaxAverage, // time-weighted average tax rate over the current budget cycle
+		gameLevel: unwrap(micropolis.gameLevel), // difficulty level (0=easy, 1=medium, 2=hard)
+		autoBudget: micropolis.autoBudget, // whether auto-budget (vs. manual funding) is enabled
 		trafficAverage: micropolis.trafficAverage, // city-wide average traffic density
 		pollutionAverage: micropolis.pollutionAverage, // city-wide average pollution level
 		crimeAverage: micropolis.crimeAverage, // city-wide average crime level
