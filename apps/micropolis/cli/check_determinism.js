@@ -12,42 +12,36 @@
  * Mirrors run_sim.js's setup (init -> loadCity -> seedRandom -> simTick loop)
  * but keeps everything in memory and writes only a diff report.
  *
- * WHAT THIS SCRIPT ESTABLISHED
+ * SEEDING ORDER MATTERS
  *
- * The residual non-determinism is randomness consumed *before* the JS-side
- * seedRandom() call, from a wall-clock seed:
+ * seedRandom() is always called *before* loadCity(), never after. This is the
+ * only ordering that yields a reproducible run:
  *
- *   Micropolis::init()      -> simInit() -> initWillStuff() -> randomlySeedRandom()
- *   Micropolis::loadCity()  -> loadFile() -> initWillStuff() -> randomlySeedRandom()
+ *   Micropolis::init()      -> simInit() -> randomlySeedRandom()
+ *   Micropolis::loadCity()  -> loadFile() -> initWillStuff()
  *                                        -> doSimInit() -> mapScan(0, WORLD_W)
- *                           -> doSimInit() -> mapScan(0, WORLD_W)   (again)
  *
- * randomlySeedRandom() (random.cpp) seeds nextRandom from gettimeofday(), and
- * the doSimInit() mapScans that follow run the zone simulation over the freshly
- * loaded city — doResidential/doCommercial/doIndustrial etc. draw getRandom()
- * and *mutate map tiles*. So by the time run_sim.js calls seedRandom(seed), the
- * world already differs run to run. Seeding before loadCity() doesn't help:
- * initWillStuff() overwrites the seed from the clock.
+ * init() deliberately seeds from the wall clock, so that an unseeded game is
+ * random. loadCity()'s map scans then run the zone simulation over the freshly
+ * loaded city -- doResidential/doCommercial/doIndustrial etc. draw getRandom()
+ * and *mutate map tiles* (e.g. `map[x][y] = ... + getRandom(2)` in zone.cpp).
+ * So a seed applied after the load arrives too late: the world it was supposed
+ * to determine has already been built from the clock-derived seed. Seeding
+ * before the load is what makes the load itself reproducible.
  *
- * Evidence, all reproducible with the flags below:
- *   --fresh-module                  -> post-load mapHash differs across runs
- *   --freeze-clock                  -> byte-identical runs
- *   --freeze-clock-until-load       -> byte-identical runs, so the only other
- *                                      clock read (simUpdate -> tickCount ->
- *                                      blinkFlag) is irrelevant to the sim
- *   --seed-before-load              -> still non-deterministic
+ * HISTORY
  *
- * Corollaries:
- *   - Empty/sparse cities (e.g. splats) are already deterministic with a live
- *     clock: the pre-seed mapScans have nothing to mutate.
- *   - The intermittent "memory access out of bounds" crash (deadwood, kobe) is
- *     intermittent *because* of this. Under --freeze-clock kobe crashes on
- *     every attempt instead of ~60% of them.
+ * This used to be the other way round. initWillStuff() called
+ * randomlySeedRandom() on every path, so a pre-load seed was always clobbered
+ * and the script seeded after the load instead, with a --seed-before-load flag
+ * kept only to demonstrate that seeding early did not help. The reseed has
+ * since moved out of initWillStuff() to simInit() (i.e. to init() alone), which
+ * inverts that conclusion: seeding before the load now works, seeding after it
+ * does not, and the flag is gone because there is no longer a reason to choose.
  *
- * Separately found while writing this: Micropolis::callback is never
- * initialized (not in the constructor, not in init()), and setCallback() does
- * `if (callback != NULL) delete callback`. It only works because a fresh WASM
- * heap is zero-filled — see the comment at the micropolis.delete() call below.
+ * A related fix removed a redundant doSimInit() call from loadCity(), which had
+ * been running a stray uninitialized mapScan and advancing the city one
+ * simulation step past the file on disk.
  *
  * Usage:
  *   pnpm tsx apps/micropolis/cli/check_determinism.js --city haight --ticks 320 --runs 3
@@ -66,19 +60,12 @@ const argv = yargs(hideBin(process.argv))
 	.option('city', { alias: 'c', type: 'string', default: 'haight', describe: 'Builtin city to load' })
 	.option('ticks', { alias: 't', type: 'number', default: 320, describe: 'simTick() calls per run' })
 	.option('runs', { alias: 'r', type: 'number', default: 3, describe: 'Number of repeat runs to compare' })
-	.option('seed', { type: 'number', default: 42, describe: 'Seed passed to seedRandom() after loadCity()' })
+	.option('seed', { type: 'number', default: 42, describe: 'Seed passed to seedRandom() before loadCity()' })
 	.option('disasters', { type: 'boolean', default: true, describe: 'Pass --no-disasters to disable random disasters' })
 	.option('fresh-module', {
 		type: 'boolean',
 		default: false,
 		describe: 'Load a brand-new WASM module instance for each run (default: reuse one module, new Micropolis object)'
-	})
-	.option('seed-before-load', {
-		type: 'boolean',
-		default: false,
-		describe:
-			'Also call seedRandom() before loadCity(), not just after. Verified not to help — ' +
-			'loadCity() -> initWillStuff() -> randomlySeedRandom() overwrites the seed from the clock.'
 	})
 	.option('log-every-tick', { type: 'boolean', default: false, describe: 'Snapshot every tick instead of phaseCycle===15' })
 	.option('max-diffs', { type: 'number', default: 20, describe: 'Max individual field diffs to print per run pair' })
@@ -214,19 +201,21 @@ async function runOnceInner(engine, runIndex, realDateNow) {
 	micropolis.init();
 
 	if (!argv.disasters) micropolis.enableDisasters = false;
-	if (argv.seedBeforeLoad) micropolis.seedRandom(argv.seed);
+
+	// Must be before loadCity(): the load's map scans consume the RNG and write
+	// the results into map tiles, so a seed applied afterwards is too late to
+	// determine the loaded world. See SEEDING ORDER MATTERS above.
+	micropolis.seedRandom(argv.seed);
 
 	const loaded = micropolis.loadCity(`/cities/${argv.city}.cty`);
 	if (argv.freezeClockUntilLoad) Date.now = realDateNow;
 	if (!loaded) throw new Error(`Failed to load builtin city "${argv.city}"`);
 
-	// Fingerprint the world the instant loading finished — i.e. *before*
-	// seedRandom() gets a chance to make anything reproducible. If these
-	// hashes differ across runs, the divergence predates our seeding.
+	// Fingerprint the world the instant loading finished. The seed was applied
+	// before the load, so these hashes must match across runs; if they differ,
+	// something in the load path is still consuming unseeded randomness.
 	const views = createMapMopViews(engine, micropolis);
 	const postLoadHash = views ? hashU16(views.mapData) : null;
-
-	micropolis.seedRandom(argv.seed);
 
 	const shouldLog = (m) => argv.logEveryTick || m.phaseCycle === 15;
 	const rows = [];
@@ -288,7 +277,7 @@ function diffCounters(a, b) {
 async function main() {
 	console.log(
 		`city=${argv.city} seed=${argv.seed} ticks=${argv.ticks} runs=${argv.runs} ` +
-			`disasters=${argv.disasters} freshModule=${argv.freshModule} seedBeforeLoad=${argv.seedBeforeLoad}`
+			`disasters=${argv.disasters} freshModule=${argv.freshModule}`
 	);
 
 	let sharedEngine = argv.freshModule ? null : await loadMicropolisMainModule();
@@ -308,8 +297,8 @@ async function main() {
 	console.log(
 		loadHashes.size === 1
 			? `\npost-loadCity() map state is identical across runs (${[...loadHashes][0]})`
-			: `\npost-loadCity() map state ALREADY DIFFERS across runs: ${[...loadHashes].join(', ')}` +
-					'\n  => divergence predates seedRandom(); loadCity() itself consumed clock-seeded randomness'
+			: `\npost-loadCity() map state DIFFERS across runs: ${[...loadHashes].join(', ')}` +
+					'\n  => the load path consumed randomness the pre-load seedRandom() did not determine'
 	);
 
 	let anyDiff = false;

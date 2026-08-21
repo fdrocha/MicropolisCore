@@ -11,12 +11,9 @@
  * low-signal events (simulateRobots, simulateChurch, updateMap,
  * updateHistory, updateDate), which are skipped by default.
  *
- * KNOWN ISSUE: the "deadwood" builtin city intermittently crashes the WASM
- * engine with "RuntimeError: memory access out of bounds" (a real
- * out-of-bounds memory access in the C++ engine, not a bug in this script).
- * It's nondeterministic — reruns with the same --seed and tick count
- * sometimes succeed and sometimes crash. Avoid it until the underlying
- * engine bug is fixed.
+ * Seeding: seedRandom() is called before loadCity(), which is the only ordering
+ * that makes a run reproducible — the load's map scans consume the RNG and bake
+ * the result into map tiles, so a later seed cannot determine the loaded world.
  *
  * Usage:
  *   pnpm run run-sim --city haight --ticks 200
@@ -89,10 +86,7 @@ const argv = yargs(hideBin(process.argv))
 		type: 'string',
 		choices: BUILTIN_CITIES,
 		default: 'haight',
-		describe:
-			'Builtin city to load. KNOWN ISSUE: "deadwood" intermittently crashes the WASM engine ' +
-			'("RuntimeError: memory access out of bounds") — a nondeterministic out-of-bounds memory ' +
-			'access in the C++ engine, not this script. Avoid it until fixed.'
+		describe: 'Builtin city to load.'
 	})
 	.option('ticks', {
 		alias: 't',
@@ -136,7 +130,7 @@ const argv = yargs(hideBin(process.argv))
 		type: 'number',
 		default: 42,
 		describe:
-			'Seed the RNG right after loadCity() (applied every run — a fixed default keeps output paths and results reproducible). Caveat: this makes the raw RNG draws reproducible, but the simulation itself has other unexplained non-determinism — repeated runs with the same seed still diverge slightly.'
+			'Seed the RNG just before loadCity() (applied every run — a fixed default keeps output paths and results reproducible). Runs with the same city, seed and tick count are reproducible; verify with cli/check_determinism.js.'
 	})
 	.example('$0 --city haight --ticks 500', 'Run haight for 500 ticks')
 	.example('$0 --city haight --turns 500', 'Run haight for 500 turns (8000 ticks), logging exactly 500 rows')
@@ -358,6 +352,13 @@ async function main() {
 		micropolis.enableDisasters = false;
 	}
 
+	// Must be before loadCity(): the load's map scans draw from the RNG and
+	// write the results into map tiles (zone.cpp), so a seed applied afterwards
+	// arrives too late to determine the loaded world. init() seeds from the wall
+	// clock so that an unseeded game is random, which is why this has to come
+	// after init() but before the load.
+	micropolis.seedRandom(argv.seed);
+
 	const loaded = micropolis.loadCity(cityPath);
 	if (!loaded) {
 		console.error(`Failed to load builtin city "${argv.city}" (${cityPath})`);
@@ -365,11 +366,6 @@ async function main() {
 		process.exitCode = 1;
 		return;
 	}
-
-	// loadCity() reseeds the RNG from the clock internally, so --seed only
-	// takes effect if applied after it — setting it before would be
-	// silently overwritten.
-	micropolis.seedRandom(argv.seed);
 
 	console.log(`Loaded ${argv.city} — running ${totalTicks} ticks, writing stats to ${statsPath} and events to ${logPath}`);
 	if (!argv.logEveryTick) {
