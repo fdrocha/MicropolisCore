@@ -29,6 +29,7 @@ import yargs from 'yargs/yargs';
 import { hideBin } from 'yargs/helpers';
 import { loadMicropolisMainModule } from '../src/lib/wasm/node.ts';
 import { callbackMethodNames } from '../src/lib/wasm/callbacks.ts';
+import { heapU16FromEmscriptenModule } from '../src/lib/wasm/heap.ts';
 import { messageText } from '../src/lib/engineMessages.ts';
 
 // Events that fire every tick (or nearly so) and rarely carry information
@@ -151,7 +152,31 @@ function unwrap(value) {
 	return value;
 }
 
-function snapshot(micropolis, tick) {
+// Tile-census categories over the LOMASK tile number (tool.h enums). One
+// linear pass over the live 120x100 map view per snapshot; cheap relative to
+// the 16 simTick()s per cityTime.
+const LOMASK = 0x03ff;
+const ZONEBIT = 0x0400;
+function tileCensus(mapData) {
+	const c = { water: 0, tree: 0, rubble: 0, flood: 0, radioactive: 0, fire: 0, road: 0, wire: 0, rail: 0, zoneCenters: 0 };
+	for (let i = 0; i < mapData.length; i++) {
+		const v = mapData[i];
+		if (v & ZONEBIT) c.zoneCenters++;
+		const t = v & LOMASK;
+		if (t >= 2 && t <= 20) c.water++;
+		else if (t >= 21 && t <= 43) c.tree++;
+		else if (t >= 44 && t <= 47) c.rubble++;
+		else if (t >= 48 && t <= 51) c.flood++;
+		else if (t === 52) c.radioactive++;
+		else if (t >= 56 && t <= 63) c.fire++;
+		else if (t >= 64 && t <= 207) c.road++;
+		else if (t >= 208 && t <= 222) c.wire++;
+		else if (t >= 224 && t <= 238) c.rail++;
+	}
+	return c;
+}
+
+function snapshot(micropolis, tick, mapData) {
 	return {
 		tick, // number of simTick() calls made so far (script-side counter, not an engine field)
 		cityName: String(micropolis.cityName ?? ''), // name of the loaded city
@@ -191,7 +216,17 @@ function snapshot(micropolis, tick) {
 		externalMarket: micropolis.externalMarket, // external market demand multiplier for industry
 		roadEffect: micropolis.roadEffect, // road funding effectiveness multiplier (funding level -> service quality)
 		policeEffect: micropolis.policeEffect, // police funding effectiveness multiplier
-		fireEffect: micropolis.fireEffect // fire funding effectiveness multiplier
+		fireEffect: micropolis.fireEffect, // fire funding effectiveness multiplier
+		totalPop: micropolis.totalPop, // census total (resPop/8 + comPop + indPop), the tax base
+		churchPop: micropolis.churchPop, // number of churches (self-built, tracks resPop like hospitals)
+		cityAssessedValue: micropolis.cityAssessedValue, // infrastructure book value (updated at each evaluation)
+		resValve: micropolis.resValve, // residential demand valve (-2000..2000, drives zone growth/decay)
+		comValve: micropolis.comValve, // commercial demand valve (-1500..1500)
+		indValve: micropolis.indValve, // industrial demand valve (-1500..1500)
+		resCap: micropolis.resCap, // residential growth capped pending a stadium (resPop > 500, none built)
+		comCap: micropolis.comCap, // commercial growth capped pending an airport (comPop > 100)
+		indCap: micropolis.indCap, // industrial growth capped pending a seaport (indPop > 70)
+		census: tileCensus(mapData) // tile counts: water/tree/rubble/flood/radioactive/fire/road/wire/rail/zoneCenters
 	};
 }
 
@@ -380,10 +415,18 @@ async function main() {
 	// of the cycle, after every scan for the current cityTime has completed.
 	const shouldLog = (m) => argv.logEveryTick || m.phaseCycle === 15;
 
+	// Live Uint16 view over the engine's map for the per-snapshot tile census.
+	// Re-derived per snapshot: the WASM heap can grow and detach old views.
+	const mapView = () => {
+		const heap = heapU16FromEmscriptenModule(engine);
+		const start = micropolis.getMapAddress() / 2;
+		return heap.subarray(start, start + micropolis.getMapSize() / 2);
+	};
+
 	const out = fs.createWriteStream(statsPath, { flags: 'w' });
 	let rowsWritten = 0;
 	if (shouldLog(micropolis)) {
-		out.write(JSON.stringify(snapshot(micropolis, 0)) + '\n');
+		out.write(JSON.stringify(snapshot(micropolis, 0, mapView())) + '\n');
 		rowsWritten++;
 	}
 
@@ -391,7 +434,7 @@ async function main() {
 		tickRef.current = tick;
 		micropolis.simTick();
 		if (shouldLog(micropolis)) {
-			out.write(JSON.stringify(snapshot(micropolis, tick)) + '\n');
+			out.write(JSON.stringify(snapshot(micropolis, tick, mapView())) + '\n');
 			rowsWritten++;
 		}
 	}
