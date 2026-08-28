@@ -158,11 +158,16 @@ function unwrap(value) {
 const LOMASK = 0x03ff;
 const ZONEBIT = 0x0400;
 function tileCensus(mapData) {
-	const c = { water: 0, tree: 0, rubble: 0, flood: 0, radioactive: 0, fire: 0, road: 0, wire: 0, rail: 0, zoneCenters: 0 };
+	const c = { water: 0, shore: 0, tree: 0, rubble: 0, flood: 0, radioactive: 0, fire: 0, road: 0, wire: 0, rail: 0, zoneCenters: 0 };
 	for (let i = 0; i < mapData.length; i++) {
 		const v = mapData[i];
 		if (v & ZONEBIT) c.zoneCenters++;
 		const t = v & LOMASK;
+		// shore = river-edge tiles (FIRSTRIVEDGE..LASTRIVEDGE). Flood exposure
+		// scales with these, not with open water: makeFlood() only starts a
+		// flood from a river-edge tile (disasters.cpp), so maps whose water is
+		// all RIVER/CHANNEL tiles (happisle, kowloon, badnews) can never flood.
+		if (t >= 5 && t <= 20) c.shore++;
 		if (t >= 2 && t <= 20) c.water++;
 		else if (t >= 21 && t <= 43) c.tree++;
 		else if (t >= 44 && t <= 47) c.rubble++;

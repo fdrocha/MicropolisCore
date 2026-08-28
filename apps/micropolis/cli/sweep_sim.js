@@ -116,11 +116,14 @@ const interventions = argv.at.map(parseIntervention).sort((a, b) => a.turn - b.t
 const LOMASK = 0x03ff;
 const ZONEBIT = 0x0400;
 function tileCensus(mapData) {
-	const c = { water: 0, tree: 0, rubble: 0, flood: 0, rad: 0, fire: 0, road: 0, wire: 0, rail: 0, zones: 0 };
+	const c = { water: 0, shore: 0, tree: 0, rubble: 0, flood: 0, rad: 0, fire: 0, road: 0, wire: 0, rail: 0, zones: 0 };
 	for (let i = 0; i < mapData.length; i++) {
 		const v = mapData[i];
 		if (v & ZONEBIT) c.zones++;
 		const t = v & LOMASK;
+		// River-edge tiles: the only tiles makeFlood() can start a flood from,
+		// so flood exposure scales with shore, not water (disasters.cpp).
+		if (t >= 5 && t <= 20) c.shore++;
 		if (t >= 2 && t <= 20) c.water++;
 		else if (t >= 21 && t <= 43) c.tree++;
 		else if (t >= 44 && t <= 47) c.rubble++;
