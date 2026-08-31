@@ -59,6 +59,66 @@ export const ENGINE_MESSAGES: Record<number, string> = {
 	57: 'Rio de Janeiro scenario.'
 };
 
+/**
+ * The engine's bankruptcy signal — "YOUR CITY HAS GONE BROKE!", raised by
+ * doBudgetNow() when autoBudget is on and the treasury plus this year's tax
+ * take cannot cover the requested police/fire/road spending (budget.cpp).
+ */
+export const MESSAGE_NO_MONEY = 29;
+
+/**
+ * Disaster and incident messages, mapped to the short stable slugs the CLI
+ * sweep tooling uses as record keys. Import this instead of writing a local
+ * number -> name map.
+ *
+ * The numbers are the `MessageNumber` enum in
+ * `packages/micropolis-engine/src/text.h`, which carries only two explicit `=`
+ * anchors (`MESSAGE_NEED_MORE_RESIDENTIAL = 1` and `MESSAGE_LAST = 57`), so
+ * every other value has to be counted — 42/43/44 are especially easy to shift
+ * by one, which silently files meltdowns as floods. `emscripten.cpp` annotates
+ * every value with its number and is the cross-check; `engineMessages.test.ts`
+ * parses the enum out of text.h and asserts these values still agree with it.
+ *
+ * This covers only the messages that mean something damaged the city — the
+ * advisories, funding warnings, population milestones and scenario messages
+ * are deliberately left out.
+ */
+export const DISASTER_KINDS: Record<number, string> = {
+	20: 'fire',
+	21: 'monster',
+	22: 'tornado',
+	23: 'earthquake',
+	24: 'planeCrash',
+	25: 'shipCrash',
+	26: 'trainCrash',
+	27: 'helicopterCrash',
+	30: 'firebombing',
+	32: 'explosion',
+	42: 'flood',
+	43: 'meltdown',
+	44: 'riots'
+};
+
+/**
+ * The `MESSAGE_*` enum name each DISASTER_KINDS slug is expected to sit on.
+ * Kept beside the map so the test can check both halves against text.h.
+ */
+export const DISASTER_ENUM_NAMES: Record<string, string> = {
+	fire: 'MESSAGE_FIRE_REPORTED',
+	monster: 'MESSAGE_MONSTER_SIGHTED',
+	tornado: 'MESSAGE_TORNADO_SIGHTED',
+	earthquake: 'MESSAGE_EARTHQUAKE',
+	planeCrash: 'MESSAGE_PLANE_CRASHED',
+	shipCrash: 'MESSAGE_SHIP_CRASHED',
+	trainCrash: 'MESSAGE_TRAIN_CRASHED',
+	helicopterCrash: 'MESSAGE_HELICOPTER_CRASHED',
+	firebombing: 'MESSAGE_FIREBOMBING',
+	explosion: 'MESSAGE_EXPLOSION_REPORTED',
+	flood: 'MESSAGE_FLOODING_REPORTED',
+	meltdown: 'MESSAGE_NUCLEAR_MELTDOWN',
+	riots: 'MESSAGE_RIOTS_REPORTED'
+};
+
 export function messageText(index: number): string {
 	if (index < 0) return '';
 	return ENGINE_MESSAGES[index] ?? `City message #${index}`;
