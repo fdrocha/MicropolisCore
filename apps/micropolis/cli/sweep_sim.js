@@ -61,7 +61,12 @@ const argv = yargs(hideBin(process.argv))
 	.option('sample-every', { type: 'number', default: 48, describe: 'Snapshot cadence in turns (48 = yearly).' })
 	.option('at', { type: 'array', default: [], describe: 'Intervention "TIME:ACTION[=ARG]". TIME is y<years> or t<turns> from run start.' })
 	.option('disasters', { type: 'boolean', default: true, describe: 'Random disasters on/off (--no-disasters to disable).' })
-	.option('game-level', { type: 'number', describe: 'Force game level 0..2 after load (loadCity does not restore it; engine default is 0).' })
+	.option('game-level', {
+		type: 'number',
+		describe:
+			'Force game level 0..2 (0=easy, 1=medium, 2=hard). Applied AFTER loadCity(), which restores ' +
+			'gameLevel from the save file (simLoadInit reads miscHist[15]) and would otherwise clobber it.'
+	})
 	.option('out', { type: 'string', demandOption: true, describe: 'Output JSONL path, or - for stdout.' })
 	.help()
 	.strict()
@@ -223,12 +228,15 @@ async function main() {
 			micropolis.setCallback(callback, {});
 			micropolis.init();
 			if (!argv.disasters) micropolis.enableDisasters = false;
-			if (argv.gameLevel !== undefined) micropolis.setGameLevel(GAME_LEVELS[argv.gameLevel]);
 			micropolis.seedRandom(seed);
 			if (!micropolis.loadCity(`/cities/${city}.cty`)) {
 				console.error(`Failed to load ${city}`);
 				process.exit(1);
 			}
+
+			// After the load, not before: loadCity() -> simLoadInit() restores
+			// gameLevel from miscHist[15], so a level set earlier is discarded.
+			if (argv.gameLevel !== undefined) micropolis.setGameLevel(GAME_LEVELS[argv.gameLevel]);
 
 			// The heap can grow, so re-derive the view each run (and, cheaply,
 			// on each snapshot via the closure below).
