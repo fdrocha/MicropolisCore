@@ -300,7 +300,12 @@ void Micropolis::voteProblems(const short problemTable[PROBNUM])
             voteCount++;
         }
         problem++;
-        if (problem > PROBNUM) {
+        // Was `problem > PROBNUM`, which let problem reach PROBNUM and index
+        // one past the end of both problemTable (a stack array) and
+        // problemVotes (a member). The out-of-bounds read is undefined
+        // behavior: -O0 and -O3 builds saw different values there, consumed
+        // a different number of getRandom() draws, and so diverged.
+        if (problem >= PROBNUM) {
             problem = 0;
         }
         loopCount++;
