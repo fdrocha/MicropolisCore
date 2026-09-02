@@ -203,8 +203,13 @@ VARIANT_CXXFLAGS = $(EMDEBUG_CXXFLAGS)
 VARIANT_LDFLAGS = $(EMDEBUG_LDFLAGS)
 else
 OUTDIR = build
-VARIANT_CXXFLAGS =
-VARIANT_LDFLAGS =
+# Without an explicit -O level em++ defaults to -O0 (and turns ASSERTIONS on),
+# which ran simTick() ~4x slower than -O3 in the headless runners (28k vs
+# 120k ticks/s on haight) and produced a 2.5x larger .wasm. Output is
+# bit-identical between the two: run_sim.js / run_continuations.js logs were
+# diffed across builds when this was added.
+VARIANT_CXXFLAGS = -O3
+VARIANT_LDFLAGS = -O3
 endif
 
 LIBRARY = $(OUTDIR)/micropolisengine
