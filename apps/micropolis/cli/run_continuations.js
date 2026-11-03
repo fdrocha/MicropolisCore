@@ -28,11 +28,12 @@
  * each continuation in seed order.
  *
  * --intervene ACTION (repeatable) applies an intervention (lib/interventions.js)
- * to every continuation right after the restore and reseed, so a disaster's
- * location depends on the continuation seed. It counts as an intervention at
- * turn branchAt-1: its events, then an "intervention" event line, are tagged
- * with that turn's last tick, ahead of the run's ticks. One without effect in any
- * continuation is an error: the run stops and exits nonzero.
+ * once, at the end of the trunk and before the snapshot, so every continuation
+ * starts from the same post-intervention state (the same disaster location and
+ * strength) and only the RNG afterwards differs. This is the state run_sim.js
+ * --at (branchAt-1):ACTION reaches at the same tick. Its events, then an
+ * "intervention" event line, are trunk lines tagged with turn branchAt-1's last
+ * tick. One without effect is an error: nothing branches and the exit is nonzero.
  *
  * Writes go through fs.writeSync on fd 1 so a slow consumer applies
  * backpressure instead of the output piling up in memory. Progress and timing
@@ -424,6 +425,24 @@ async function main() {
 		if (shouldLog(micropolis)) emit(snapshot(micropolis, null, 0, mapView()));
 	}
 	const trunkRows = runTicks(0, branchTick);
+	// Interventions: once, on the trunk, so the snapshot holds their outcome.
+	for (const iv of interventions) {
+		ctx.tick = interventionEventTick(iv.turn);
+		const entry = { ...eventEntry(micropolis, ctx, 'intervention'), turn: iv.turn, action: iv.action };
+		try {
+			const result = applyIntervention(micropolis, iv, sentMessages);
+			if (result !== undefined) entry.result = result;
+		} catch (err) {
+			if (!(err instanceof InterventionError)) throw err;
+			flush();
+			micropolis.delete();
+			console.error(`Error: ${err.message}`);
+			process.exitCode = 1;
+			return;
+		}
+		if (!ctx.muted) emit(entry);
+	}
+	ctx.tick = branchTick;
 	if (!ctx.muted) emit({ kind: 'end', seed: null, run: 'trunk', rows: trunkRows, cityTime: micropolis.cityTime });
 	const tTrunk1 = performance.now();
 
@@ -448,24 +467,8 @@ async function main() {
 		micropolis.seedRandom(seed);
 
 		ctx.seed = seed;
-		emit({ kind: 'begin', seed, run: 'continuation', fromTick: branchTick, toTick: endTick });
-		for (const iv of interventions) {
-			ctx.tick = interventionEventTick(iv.turn);
-			const entry = { ...eventEntry(micropolis, ctx, 'intervention'), turn: iv.turn, action: iv.action };
-			try {
-				const result = applyIntervention(micropolis, iv, sentMessages);
-				if (result !== undefined) entry.result = result;
-			} catch (err) {
-				if (!(err instanceof InterventionError)) throw err;
-				flush();
-				micropolis.delete();
-				console.error(`Error: seed ${seed}: ${err.message}`);
-				process.exitCode = 1;
-				return;
-			}
-			emit(entry);
-		}
 		ctx.tick = branchTick;
+		emit({ kind: 'begin', seed, run: 'continuation', fromTick: branchTick, toTick: endTick });
 		const rows = runTicks(branchTick, endTick);
 		emit({ kind: 'end', seed, run: 'continuation', rows, cityTime: micropolis.cityTime });
 		nRuns++;

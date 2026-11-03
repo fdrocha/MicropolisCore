@@ -28,7 +28,7 @@ pnpm tsx cli/run_continuations.js --city haight -S 1440 -H 480 --branch-seeds 1-
 | `--no-trunk-output` | off | Skip streaming the trunk run (turns 0..S). The trunk is still simulated. |
 | `--no-disasters` | off | Disable random disasters, as in `run_sim.js`. |
 | `--verbose-log` | off | Include low-signal events (`simulateRobots`, `simulateChurch`, `updateMap`, `updateHistory`, `updateDate`), as in `run_sim.js`. |
-| `--intervene` | none | Intervention applied to every continuation at the branch point (repeatable): `makeFire`, `makeFlood`, `makeTornado`, `makeEarthquake`, `makeMonster`, `makeMeltdown`, `makeFireBombs`, `demolishCoalPower`, `demolishNuclearPower`, `demolishPowerPlants`, `demolishAirport`. See [Interventions](#interventions). |
+| `--intervene` | none | Intervention applied once at the branch point, before the snapshot (repeatable): `makeFire`, `makeFlood`, `makeTornado`, `makeEarthquake`, `makeMonster`, `makeMeltdown`, `makeFireBombs`, `demolishCoalPower`, `demolishNuclearPower`, `demolishPowerPlants`, `demolishAirport`. See [Interventions](#interventions). |
 | `--progress` | off | One stderr line per finished continuation. |
 
 There is no `--log-every-tick`; exactly one stats row is emitted per turn.
@@ -108,16 +108,17 @@ first stats rows share the same `cityTime`.
 
 ## Interventions
 
-Each `--intervene` action runs in every continuation right after the snapshot
-is restored and the branch seed applied, so a disaster's location varies by
-seed. It counts as an intervention at turn `S-1` (`run_sim.js --at S-1:ACTION`
-runs at the same tick, `branchTick`): the events it causes and then an
-`intervention` event are tagged tick `branchTick - 1`, turn `S-1`, ahead of the
-continuation's ticks. A `(S-1, H]` resolution window thus counts only what
-follows the intervention.
+Each `--intervene` action runs once, at the end of the trunk and before the
+heap snapshot, so every continuation starts from the same post-intervention
+state (same disaster location and strength) and only the RNG afterwards
+differs: a tornado's or monster's path, how a fire or flood spreads. This is
+the state `run_sim.js --at S-1:ACTION` reaches at the same tick, `branchTick`.
+The events it causes and then an `intervention` event are trunk lines
+(`"seed": null`) tagged tick `branchTick - 1`, turn `S-1`, so a `(S-1, H]`
+resolution window counts only what follows the intervention.
 
 ```json
-{"kind":"event","seed":7,"tick":23039,"event":"intervention","cityTime":6279,
+{"kind":"event","seed":null,"tick":23039,"event":"intervention","cityTime":6279,
  "cityYear":2030,"cityMonth":9,"turn":1439,"action":"demolishAirport",
  "result":{"demolished":1}}
 ```
@@ -126,7 +127,7 @@ Demolitions carry `result.demolished`. A disaster takes effect only if the
 engine sends its message during the call ("Flooding reported!" and so on). An
 intervention without effect (no river edge to flood, no nuclear plant to melt
 down, a monster or tornado already active, nothing to demolish) stops the run
-with an error on stderr and a nonzero exit.
+with an error on stderr and a nonzero exit, before any continuation runs.
 
 ## Guarantees
 
