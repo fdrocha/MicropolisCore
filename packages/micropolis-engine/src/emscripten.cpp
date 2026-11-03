@@ -1264,6 +1264,9 @@ function createTypedArrayFromMap(mapInstance) {
     .function("makeFlood", &Micropolis::makeFlood)
     .function("setFire", &Micropolis::setFire)
     .function("fireBomb", &Micropolis::fireBomb)
+    .function("makeMonster", &Micropolis::makeMonster)
+    .function("makeTornado", &Micropolis::makeTornado)
+    .function("demolishZones", &Micropolis::demolishZones)
 
     // City History Arrays
     //.function("getResidentialHistory", &Micropolis::getResidentialHistory, allow_raw_pointers()) // TODO: wrap

@@ -27,6 +27,13 @@
  * runs are strictly sequential: trunk first (unless --no-trunk-output), then
  * each continuation in seed order.
  *
+ * --intervene ACTION (repeatable) applies an intervention (lib/interventions.js)
+ * to every continuation right after the restore and reseed, so a disaster's
+ * location depends on the continuation seed. It counts as an intervention at
+ * turn branchAt-1: its events, then an "intervention" event line, are tagged
+ * with that turn's last tick, ahead of the run's ticks. One without effect in any
+ * continuation is an error: the run stops and exits nonzero.
+ *
  * Writes go through fs.writeSync on fd 1 so a slow consumer applies
  * backpressure instead of the output piling up in memory. Progress and timing
  * go to stderr.
@@ -43,6 +50,14 @@ import { loadMicropolisMainModule } from '../src/lib/wasm/node.ts';
 import { callbackMethodNames } from '../src/lib/wasm/callbacks.ts';
 import { heapU16FromEmscriptenModule } from '../src/lib/wasm/heap.ts';
 import { messageText } from '../src/lib/engineMessages.ts';
+import {
+	ACTIONS,
+	InterventionError,
+	applyIntervention,
+	interventionEventTick,
+	interventionTick,
+	parseInterventions
+} from './lib/interventions.js';
 
 const TICKS_PER_TURN = 16; // one cityTime increment (see simulate.cpp phaseCycle)
 
@@ -106,6 +121,12 @@ const argv = yargs(hideBin(process.argv))
 		describe: 'Include high-frequency, low-signal events (simulateRobots, simulateChurch, updateMap, updateHistory, updateDate).'
 	})
 	.option('disasters', { type: 'boolean', default: true, describe: 'Random disasters. Pass --no-disasters to turn them off.' })
+	.option('intervene', {
+		type: 'array',
+		string: true,
+		default: [],
+		describe: `Intervention applied to every continuation at the branch point. Repeatable. ACTION is one of: ${ACTIONS.join(', ')}.`
+	})
 	.option('progress', { type: 'boolean', default: false, describe: 'Print a stderr line per continuation.' })
 	.example('$0 --city haight -S 1440 -H 480 --branch-seeds 1-100 > /dev/null', '30 years of trunk, then 100 ten-year continuations')
 	.help()
@@ -114,6 +135,7 @@ const argv = yargs(hideBin(process.argv))
 	.parseSync();
 
 const seedRange = parseSeedRange(argv.branchSeeds);
+const interventions = parseInterventions(argv.intervene.map((action) => `${argv.branchAt - 1}:${action}`));
 
 // ---------------------------------------------------------------------------
 // stdout writer: synchronous, batched. Never touch process.stdout, which would
@@ -279,12 +301,32 @@ function namedArgs(name, args) {
 	return out;
 }
 
+function eventEntry(micropolis, ctx, name) {
+	return {
+		kind: 'event',
+		seed: ctx.seed,
+		tick: ctx.tick,
+		event: name,
+		cityTime: micropolis.cityTime,
+		cityYear: micropolis.cityYear,
+		cityMonth: micropolis.cityMonth
+	};
+}
+
 // `ctx` is mutated between runs so one JSCallback serves the trunk and every
 // continuation: ctx.seed tags the lines, ctx.tick is the script-side tick
 // counter, ctx.muted drops events (used while running the trunk silently).
-function makeStreamingCallback(engine, micropolis, ctx, verbose) {
+function makeStreamingCallback(engine, micropolis, ctx, verbose, onMessage) {
 	const handlers = {};
 	for (const name of callbackMethodNames) {
+		if (name === 'sendMessage') {
+			handlers[name] = (...allArgs) => {
+				onMessage(unwrap(allArgs[2]));
+				if (ctx.muted) return;
+				emit({ ...eventEntry(micropolis, ctx, name), ...namedArgs(name, allArgs.slice(2)) });
+			};
+			continue;
+		}
 		if (!verbose && LOW_SIGNAL_EVENTS.has(name)) {
 			handlers[name] = () => {};
 			continue;
@@ -292,15 +334,7 @@ function makeStreamingCallback(engine, micropolis, ctx, verbose) {
 		handlers[name] = (...allArgs) => {
 			if (ctx.muted) return;
 			const args = allArgs.slice(2); // drop Micropolis* and user-data handle
-			const entry = {
-				kind: 'event',
-				seed: ctx.seed,
-				tick: ctx.tick,
-				event: name,
-				cityTime: micropolis.cityTime,
-				cityYear: micropolis.cityYear,
-				cityMonth: micropolis.cityMonth
-			};
+			const entry = eventEntry(micropolis, ctx, name);
 			if (name === 'updateEvaluation') Object.assign(entry, fieldSnapshot(micropolis, EVALUATION_FIELDS));
 			else if (name === 'updateOptions') Object.assign(entry, fieldSnapshot(micropolis, OPTIONS_FIELDS));
 			else Object.assign(entry, namedArgs(name, args));
@@ -318,7 +352,13 @@ async function main() {
 	if (!(memory instanceof WebAssembly.Memory)) throw new Error('engine.wasmMemory is not available; cannot snapshot the heap');
 
 	const ctx = { seed: null, tick: 0, muted: !argv.trunkOutput };
-	const callback = makeStreamingCallback(engine, micropolis, ctx, argv.verboseLog);
+	let messages = [];
+	const sentMessages = () => {
+		const sent = messages;
+		messages = [];
+		return sent;
+	};
+	const callback = makeStreamingCallback(engine, micropolis, ctx, argv.verboseLog, (num) => messages.push(num));
 	micropolis.setCallback(callback, {});
 	micropolis.init();
 	if (!argv.disasters) micropolis.enableDisasters = false; // init() forces it on
@@ -357,6 +397,7 @@ async function main() {
 	}
 
 	const branchTick = argv.branchAt * TICKS_PER_TURN;
+	if (interventions.length && interventionTick(argv.branchAt - 1) !== branchTick) throw new Error('intervention tick mismatch');
 	const endTick = branchTick + argv.horizon * TICKS_PER_TURN;
 
 	emit({
@@ -370,7 +411,8 @@ async function main() {
 		seedLo: seedRange.lo,
 		seedHi: seedRange.hi,
 		disasters: argv.disasters,
-		trunkOutput: argv.trunkOutput
+		trunkOutput: argv.trunkOutput,
+		interventions
 	});
 
 	// --- trunk -------------------------------------------------------------
@@ -406,8 +448,24 @@ async function main() {
 		micropolis.seedRandom(seed);
 
 		ctx.seed = seed;
-		ctx.tick = branchTick;
 		emit({ kind: 'begin', seed, run: 'continuation', fromTick: branchTick, toTick: endTick });
+		for (const iv of interventions) {
+			ctx.tick = interventionEventTick(iv.turn);
+			const entry = { ...eventEntry(micropolis, ctx, 'intervention'), turn: iv.turn, action: iv.action };
+			try {
+				const result = applyIntervention(micropolis, iv, sentMessages);
+				if (result !== undefined) entry.result = result;
+			} catch (err) {
+				if (!(err instanceof InterventionError)) throw err;
+				flush();
+				micropolis.delete();
+				console.error(`Error: seed ${seed}: ${err.message}`);
+				process.exitCode = 1;
+				return;
+			}
+			emit(entry);
+		}
+		ctx.tick = branchTick;
 		const rows = runTicks(branchTick, endTick);
 		emit({ kind: 'end', seed, run: 'continuation', rows, cityTime: micropolis.cityTime });
 		nRuns++;

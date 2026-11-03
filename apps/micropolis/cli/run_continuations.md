@@ -28,6 +28,7 @@ pnpm tsx cli/run_continuations.js --city haight -S 1440 -H 480 --branch-seeds 1-
 | `--no-trunk-output` | off | Skip streaming the trunk run (turns 0..S). The trunk is still simulated. |
 | `--no-disasters` | off | Disable random disasters, as in `run_sim.js`. |
 | `--verbose-log` | off | Include low-signal events (`simulateRobots`, `simulateChurch`, `updateMap`, `updateHistory`, `updateDate`), as in `run_sim.js`. |
+| `--intervene` | none | Intervention applied to every continuation at the branch point (repeatable): `makeFire`, `makeFlood`, `makeTornado`, `makeEarthquake`, `makeMonster`, `makeMeltdown`, `makeFireBombs`, `demolishCoalPower`, `demolishNuclearPower`, `demolishPowerPlants`, `demolishAirport`. See [Interventions](#interventions). |
 | `--progress` | off | One stderr line per finished continuation. |
 
 There is no `--log-every-tick`; exactly one stats row is emitted per turn.
@@ -57,8 +58,10 @@ run's worth of state at a time: reset on `begin`, finalize on `end`.
 ```json
 {"kind":"header","city":"haight","trunkSeed":42,"branchAt":1440,"horizon":480,
  "branchTick":23040,"endTick":30720,"seedLo":1,"seedHi":100,
- "disasters":true,"trunkOutput":true}
+ "disasters":true,"trunkOutput":true,"interventions":[]}
 ```
+
+`interventions` lists `{"turn": S-1, "action": ...}` for each `--intervene`.
 
 ### `begin` / `end` (per run)
 
@@ -102,6 +105,28 @@ into each continuation: a continuation's ticks run from `branchTick + 1` to
 `endTick`, and its `cityTime`/`cityYear`/`cityMonth` continue from where the
 trunk left off. All continuations start from the identical state, so their
 first stats rows share the same `cityTime`.
+
+## Interventions
+
+Each `--intervene` action runs in every continuation right after the snapshot
+is restored and the branch seed applied, so a disaster's location varies by
+seed. It counts as an intervention at turn `S-1` (`run_sim.js --at S-1:ACTION`
+runs at the same tick, `branchTick`): the events it causes and then an
+`intervention` event are tagged tick `branchTick - 1`, turn `S-1`, ahead of the
+continuation's ticks. A `(S-1, H]` resolution window thus counts only what
+follows the intervention.
+
+```json
+{"kind":"event","seed":7,"tick":23039,"event":"intervention","cityTime":6279,
+ "cityYear":2030,"cityMonth":9,"turn":1439,"action":"demolishAirport",
+ "result":{"demolished":1}}
+```
+
+Demolitions carry `result.demolished`. A disaster takes effect only if the
+engine sends its message during the call ("Flooding reported!" and so on). An
+intervention without effect (no river edge to flood, no nuclear plant to melt
+down, a monster or tornado already active, nothing to demolish) stops the run
+with an error on stderr and a nonzero exit.
 
 ## Guarantees
 

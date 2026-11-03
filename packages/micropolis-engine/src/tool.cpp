@@ -1110,6 +1110,50 @@ ToolResult Micropolis::bulldozerTool(short x, short y, ToolEffects *effects)
 
 
 /**
+ * Bulldoze, free of charge, every building whose zone center is \a centerTile.
+ *
+ * For the big buildings checkBigZone() knows by their center tile: POWERPLANT,
+ * NUCLEAR, PORT, STADIUM, AIRPORT. It leaves SOMETINYEXP tiles, which the next
+ * map scan turns into rubble; the bulldozer's animated TINYEXP tiles only
+ * advance through animateTiles(), which a headless run never calls.
+ * bulldozerTool() can't be used: checkSize() misses the airport's center tile.
+ * @param centerTile Center tile of the buildings to demolish.
+ * @return Number of buildings demolished (0 for any other tile).
+ */
+int Micropolis::demolishZones(int centerTile)
+{
+    short deltaH, deltaV;
+    short size = checkBigZone(centerTile, &deltaH, &deltaV);
+    if (size == 0 || deltaH != 0 || deltaV != 0) {
+        return 0;
+    }
+
+    int count = 0;
+    for (int x = 0; x < WORLD_W; x++) {
+        for (int y = 0; y < WORLD_H; y++) {
+            MapValue mapVal = map[x][y];
+            if ((mapVal & ZONEBIT) && (mapVal & LOMASK) == centerTile) {
+                for (int xx = x - 1; xx < x - 1 + size; xx++) {
+                    for (int yy = y - 1; yy < y - 1 + size; yy++) {
+                        if (testBounds(xx, yy)) {
+                            MapTile tile = map[xx][yy] & LOMASK;
+                            if (tile != RADTILE && tile != DIRT) {
+                                map[xx][yy] = SOMETINYEXP | ANIMBIT | BULLBIT;
+                            }
+                        }
+                    }
+                }
+                didTool("Dozr", x, y);
+                count++;
+            }
+        }
+    }
+
+    return count;
+}
+
+
+/**
  * Build a road at a tile.
  * @param x       Horizontal position of the tile to lay road.
  * @param y       Vertical position of the tile to lay road.

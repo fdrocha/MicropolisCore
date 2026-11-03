@@ -420,6 +420,9 @@ export interface Micropolis extends ClassHandle {
   makeFlood(): void;
   setFire(): void;
   fireBomb(): void;
+  makeMonster(): void;
+  makeTornado(): void;
+  demolishZones(_0: number): number;
   sendMessage(_0: number, _1: number, _2: number, _3: boolean, _4: boolean): void;
   makeSound(_0: EmbindString, _1: EmbindString, _2: number, _3: number): void;
 }

@@ -2533,6 +2533,8 @@ public:
 
     void didTool(std::string name, short x, short y);
 
+    int demolishZones(int centerTile);
+
 private:
 
     ToolResult queryTool(short x, short y);

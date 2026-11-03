@@ -21,6 +21,12 @@
  *
  * Output goes to <output-base-dir>/<city>/log-seed<seed>[-nodisasters].jsonl,
  * with the event log next to it as events-seed<seed>[-nodisasters].jsonl.
+ *
+ * --at TURN:ACTION (repeatable) triggers a disaster or demolishes buildings
+ * just after turn TURN's row is logged (timing in lib/interventions.js). Each one
+ * logs an "intervention" event, and the output names gain -at<TURN>_<ACTION>.
+ * One that has no effect (e.g. a flood on a map without river edges) is an
+ * error: the run stops and exits nonzero.
  */
 
 import fs from 'node:fs';
@@ -31,6 +37,15 @@ import { loadMicropolisMainModule } from '../src/lib/wasm/node.ts';
 import { callbackMethodNames } from '../src/lib/wasm/callbacks.ts';
 import { heapU16FromEmscriptenModule } from '../src/lib/wasm/heap.ts';
 import { messageText } from '../src/lib/engineMessages.ts';
+import {
+	ACTIONS,
+	InterventionError,
+	applyIntervention,
+	interventionEventTick,
+	interventionTick,
+	interventionsTag,
+	parseInterventions
+} from './lib/interventions.js';
 
 // Events that fire every tick (or nearly so) and rarely carry information
 // useful for offline analysis. Skipped unless --verbose-log is passed.
@@ -133,6 +148,15 @@ const argv = yargs(hideBin(process.argv))
 		describe:
 			'Seed the RNG just before loadCity() (applied every run — a fixed default keeps output paths and results reproducible). Runs with the same city, seed and tick count are reproducible; verify with cli/check_determinism.js.'
 	})
+	.option('at', {
+		type: 'array',
+		string: true,
+		default: [],
+		describe:
+			'Intervention "TURN:ACTION", applied just after turn TURN\'s row is logged. Repeatable. ' +
+			`ACTION is one of: ${ACTIONS.join(', ')}. An intervention that has no effect is an error.`
+	})
+	.example('$0 --city haight --turns 200 --at 96:demolishPowerPlants', 'Demolish every power plant after turn 96')
 	.example('$0 --city haight --ticks 500', 'Run haight for 500 ticks')
 	.example('$0 --city haight --turns 500', 'Run haight for 500 turns (8000 ticks), logging exactly 500 rows')
 	.help()
@@ -333,9 +357,16 @@ function namedArgs(name, args) {
 	return out;
 }
 
-function makeLoggingCallback(engine, micropolis, getTick, logStream, verbose) {
+function makeLoggingCallback(engine, micropolis, getTick, logStream, verbose, onMessage) {
 	const handlers = {};
 	for (const name of callbackMethodNames) {
+		if (name === 'sendMessage') {
+			handlers[name] = (...allArgs) => {
+				onMessage(unwrap(allArgs[2]));
+				logStream.write(JSON.stringify({ ...eventBase(micropolis, getTick(), name), ...namedArgs(name, allArgs.slice(2)) }) + '\n');
+			};
+			continue;
+		}
 		if (!verbose && LOW_SIGNAL_EVENTS.has(name)) {
 			handlers[name] = () => { };
 			continue;
@@ -361,8 +392,8 @@ function makeLoggingCallback(engine, micropolis, getTick, logStream, verbose) {
 // Builds the stats and event log paths for this run:
 //   <outputBaseDir>/<city>/log-seed<seed>[-no]disasters.jsonl
 //   <outputBaseDir>/<city>/events-seed<seed>[-no]disasters.jsonl
-function outputPathsFor(outputBaseDir, city, seed, disastersEnabled) {
-	const suffix = disastersEnabled ? '-disasters' : '-nodisasters';
+function outputPathsFor(outputBaseDir, city, seed, disastersEnabled, interventions) {
+	const suffix = (disastersEnabled ? '-disasters' : '-nodisasters') + interventionsTag(interventions);
 	const dir = path.join(outputBaseDir, city);
 	return {
 		dir,
@@ -376,12 +407,26 @@ async function main() {
 	const engine = await loadMicropolisMainModule();
 	const micropolis = new engine.Micropolis();
 
-	const { dir, statsPath, logPath } = outputPathsFor(argv.outputBaseDir, argv.city, argv.seed, argv.disasters);
+	let interventions;
+	try {
+		interventions = parseInterventions(argv.at);
+	} catch (err) {
+		console.error(err.message);
+		process.exitCode = 1;
+		return;
+	}
+	const { dir, statsPath, logPath } = outputPathsFor(argv.outputBaseDir, argv.city, argv.seed, argv.disasters, interventions);
 	fs.mkdirSync(dir, { recursive: true });
 
 	const logStream = fs.createWriteStream(logPath, { flags: 'w' });
 	const tickRef = { current: 0 };
-	const callback = makeLoggingCallback(engine, micropolis, () => tickRef.current, logStream, argv.verboseLog);
+	let messages = [];
+	const sentMessages = () => {
+		const sent = messages;
+		messages = [];
+		return sent;
+	};
+	const callback = makeLoggingCallback(engine, micropolis, () => tickRef.current, logStream, argv.verboseLog, (num) => messages.push(num));
 	micropolis.setCallback(callback, {});
 	micropolis.init();
 
@@ -435,13 +480,37 @@ async function main() {
 		rowsWritten++;
 	}
 
-	for (let tick = 1; tick <= totalTicks; tick++) {
-		tickRef.current = tick;
-		micropolis.simTick();
-		if (shouldLog(micropolis)) {
-			out.write(JSON.stringify(snapshot(micropolis, tick, mapView())) + '\n');
-			rowsWritten++;
+	// Interventions at turn T run after tick interventionTick(T), the branch tick
+	// of run_continuations.js --branch-at T+1; their events carry tick 16T+15.
+	let nextIv = 0;
+	const intervene = (tick) => {
+		while (nextIv < interventions.length && interventionTick(interventions[nextIv].turn) === tick) {
+			const iv = interventions[nextIv++];
+			tickRef.current = interventionEventTick(iv.turn);
+			const entry = { ...eventBase(micropolis, tickRef.current, 'intervention'), turn: iv.turn, action: iv.action };
+			const result = applyIntervention(micropolis, iv, sentMessages);
+			if (result !== undefined) entry.result = result;
+			logStream.write(JSON.stringify(entry) + '\n');
 		}
+	};
+
+	let failure = null;
+	try {
+		for (let tick = 1; tick <= totalTicks; tick++) {
+			tickRef.current = tick;
+			micropolis.simTick();
+			if (shouldLog(micropolis)) {
+				out.write(JSON.stringify(snapshot(micropolis, tick, mapView())) + '\n');
+				rowsWritten++;
+			}
+			intervene(tick);
+		}
+	} catch (err) {
+		if (!(err instanceof InterventionError)) throw err;
+		failure = err;
+	}
+	if (!failure && nextIv < interventions.length) {
+		failure = new InterventionError(`${interventions.length - nextIv} intervention(s) fall after the last turn and were not applied`);
 	}
 
 	await Promise.all([
@@ -450,6 +519,14 @@ async function main() {
 	]);
 
 	micropolis.delete();
+	if (failure) {
+		// Leave no partial output that a cache could mistake for a finished run.
+		fs.rmSync(statsPath, { force: true });
+		fs.rmSync(logPath, { force: true });
+		console.error(`Error: ${failure.message}`);
+		process.exitCode = 1;
+		return;
+	}
 	console.log(`Done. Wrote ${rowsWritten} rows to ${statsPath}`);
 }
 
