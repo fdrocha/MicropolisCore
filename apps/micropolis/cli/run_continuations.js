@@ -28,12 +28,13 @@
  * each continuation in seed order.
  *
  * --intervene ACTION (repeatable) applies an intervention (lib/interventions.js)
- * once, at the end of the trunk and before the snapshot, so every continuation
- * starts from the same post-intervention state (the same disaster location and
- * strength) and only the RNG afterwards differs. This is the state run_sim.js
- * --at (branchAt-1):ACTION reaches at the same tick. Its events, then an
- * "intervention" event line, are trunk lines tagged with turn branchAt-1's last
- * tick. One without effect is an error: nothing branches and the exit is nonzero.
+ * in every continuation, right after the restore and reseed, so each
+ * continuation draws its own realisation (disaster location, strength). Its
+ * events, then an "intervention" event line, are continuation lines tagged with
+ * turn branchAt-1's last tick. When one has no effect with the branch seed, the
+ * continuation is restored and retried with seed + k*RETRY_STRIDE (k = 1, 2, ...)
+ * and the missed seeds are listed in its begin line; after MAX_ATTEMPTS misses
+ * the run stops with an error and a nonzero exit.
  *
  * Writes go through fs.writeSync on fd 1 so a slow consumer applies
  * backpressure instead of the output piling up in memory. Progress and timing
@@ -61,6 +62,10 @@ import {
 } from './lib/interventions.js';
 
 const TICKS_PER_TURN = 16; // one cityTime increment (see simulate.cpp phaseCycle)
+// Retries of an intervention that missed: seed + k*RETRY_STRIDE, disjoint from
+// every branch seed range below RETRY_STRIDE.
+const RETRY_STRIDE = 1_000_000;
+const MAX_ATTEMPTS = 100;
 
 // Mirrors run_sim.js.
 const LOW_SIGNAL_EVENTS = new Set(['simulateRobots', 'simulateChurch', 'updateMap', 'updateHistory', 'updateDate']);
@@ -126,7 +131,7 @@ const argv = yargs(hideBin(process.argv))
 		type: 'array',
 		string: true,
 		default: [],
-		describe: `Intervention applied to every continuation at the branch point. Repeatable. ACTION is one of: ${ACTIONS.join(', ')}.`
+		describe: `Intervention applied in every continuation at the branch point, after the reseed. Repeatable. ACTION is one of: ${ACTIONS.join(', ')}.`
 	})
 	.option('progress', { type: 'boolean', default: false, describe: 'Print a stderr line per continuation.' })
 	.example('$0 --city haight -S 1440 -H 480 --branch-seeds 1-100 > /dev/null', '30 years of trunk, then 100 ten-year continuations')
@@ -136,6 +141,7 @@ const argv = yargs(hideBin(process.argv))
 	.parseSync();
 
 const seedRange = parseSeedRange(argv.branchSeeds);
+if (argv.intervene.length && seedRange.hi >= RETRY_STRIDE) throw new Error(`--branch-seeds must stay below ${RETRY_STRIDE} with --intervene`);
 const interventions = parseInterventions(argv.intervene.map((action) => `${argv.branchAt - 1}:${action}`));
 
 // ---------------------------------------------------------------------------
@@ -144,6 +150,7 @@ const interventions = parseInterventions(argv.intervene.map((action) => `${argv.
 // ---------------------------------------------------------------------------
 const FLUSH_BYTES = 1 << 16;
 let outBuf = '';
+let capture = null; // while set, emit() collects lines here (an intervention attempt)
 
 function writeAllSync(fd, str) {
 	let buf = Buffer.from(str, 'utf8');
@@ -161,6 +168,10 @@ function writeAllSync(fd, str) {
 }
 
 function emit(obj) {
+	if (capture) {
+		capture.push(obj);
+		return;
+	}
 	outBuf += JSON.stringify(obj) + '\n';
 	if (outBuf.length >= FLUSH_BYTES) flush();
 }
@@ -413,7 +424,8 @@ async function main() {
 		seedHi: seedRange.hi,
 		disasters: argv.disasters,
 		trunkOutput: argv.trunkOutput,
-		interventions
+		interventions,
+		interventionMode: 'per-continuation'
 	});
 
 	// --- trunk -------------------------------------------------------------
@@ -425,24 +437,6 @@ async function main() {
 		if (shouldLog(micropolis)) emit(snapshot(micropolis, null, 0, mapView()));
 	}
 	const trunkRows = runTicks(0, branchTick);
-	// Interventions: once, on the trunk, so the snapshot holds their outcome.
-	for (const iv of interventions) {
-		ctx.tick = interventionEventTick(iv.turn);
-		const entry = { ...eventEntry(micropolis, ctx, 'intervention'), turn: iv.turn, action: iv.action };
-		try {
-			const result = applyIntervention(micropolis, iv, sentMessages);
-			if (result !== undefined) entry.result = result;
-		} catch (err) {
-			if (!(err instanceof InterventionError)) throw err;
-			flush();
-			micropolis.delete();
-			console.error(`Error: ${err.message}`);
-			process.exitCode = 1;
-			return;
-		}
-		if (!ctx.muted) emit(entry);
-	}
-	ctx.tick = branchTick;
 	if (!ctx.muted) emit({ kind: 'end', seed: null, run: 'trunk', rows: trunkRows, cityTime: micropolis.cityTime });
 	const tTrunk1 = performance.now();
 
@@ -456,7 +450,8 @@ async function main() {
 	ctx.muted = false;
 	const tCont0 = performance.now();
 	let nRuns = 0;
-	for (let seed = seedRange.lo; seed <= seedRange.hi; seed++) {
+	let nMissed = 0;
+	const restore = (rngSeed) => {
 		if (memory.buffer.byteLength !== heapSnapshot.byteLength) {
 			// Heap grew since the snapshot: a prefix restore would leave malloc's
 			// idea of the heap end inconsistent with the actual memory size.
@@ -464,11 +459,57 @@ async function main() {
 		}
 		new Uint8Array(memory.buffer).set(heapSnapshot);
 		if (micropolis.cityTime !== snapshotCityTime) throw new Error('heap restore failed: cityTime mismatch');
-		micropolis.seedRandom(seed);
-
+		micropolis.seedRandom(rngSeed);
+	};
+	// Applies every intervention; returns the lines they emitted, or throws InterventionError.
+	const intervene = () => {
+		const lines = [];
+		capture = lines;
+		try {
+			for (const iv of interventions) {
+				ctx.tick = interventionEventTick(iv.turn);
+				const entry = { ...eventEntry(micropolis, ctx, 'intervention'), turn: iv.turn, action: iv.action };
+				const result = applyIntervention(micropolis, iv, sentMessages);
+				if (result !== undefined) entry.result = result;
+				emit(entry);
+			}
+		} finally {
+			capture = null;
+		}
+		return lines;
+	};
+	for (let seed = seedRange.lo; seed <= seedRange.hi; seed++) {
 		ctx.seed = seed;
+		const begin = { kind: 'begin', seed, run: 'continuation', fromTick: branchTick, toTick: endTick };
+		let lines = [];
+		restore(seed);
+		if (interventions.length) {
+			const missed = [];
+			for (let rngSeed = seed; ; rngSeed = seed + missed.length * RETRY_STRIDE) {
+				if (rngSeed !== seed) restore(rngSeed);
+				try {
+					lines = intervene();
+					begin.interventionSeed = rngSeed;
+					break;
+				} catch (err) {
+					if (!(err instanceof InterventionError)) throw err;
+					missed.push(rngSeed);
+					if (missed.length >= MAX_ATTEMPTS) {
+						flush();
+						micropolis.delete();
+						console.error(`Error: ${err.message}; branch seed ${seed}: ${MAX_ATTEMPTS} attempts`);
+						process.exitCode = 1;
+						return;
+					}
+				}
+			}
+			begin.missedSeeds = missed;
+			nMissed += missed.length;
+		}
+
 		ctx.tick = branchTick;
-		emit({ kind: 'begin', seed, run: 'continuation', fromTick: branchTick, toTick: endTick });
+		emit(begin);
+		for (const line of lines) emit(line);
 		const rows = runTicks(branchTick, endTick);
 		emit({ kind: 'end', seed, run: 'continuation', rows, cityTime: micropolis.cityTime });
 		nRuns++;
@@ -485,6 +526,7 @@ async function main() {
 			`city=${argv.city} trunkSeed=${argv.seed} S=${argv.branchAt} H=${argv.horizon} seeds=${seedRange.lo}-${seedRange.hi}`,
 			`startup ${(tTrunk0 - t0).toFixed(0)} ms, trunk (${branchTick} ticks) ${(tTrunk1 - tTrunk0).toFixed(0)} ms,`,
 			`${nRuns} continuations (${argv.horizon * TICKS_PER_TURN} ticks each) ${contMs.toFixed(0)} ms total,`,
+			...(interventions.length ? [`${nMissed} intervention attempts missed,`] : []),
 			`${(contMs / Math.max(nRuns, 1)).toFixed(1)} ms each, ${((nRuns * argv.horizon * TICKS_PER_TURN) / (contMs / 1000) / 1000).toFixed(0)}k ticks/s`
 		].join(' ')
 	);

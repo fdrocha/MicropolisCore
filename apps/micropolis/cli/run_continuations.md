@@ -28,7 +28,7 @@ pnpm tsx cli/run_continuations.js --city haight -S 1440 -H 480 --branch-seeds 1-
 | `--no-trunk-output` | off | Skip streaming the trunk run (turns 0..S). The trunk is still simulated. |
 | `--no-disasters` | off | Disable random disasters, as in `run_sim.js`. |
 | `--verbose-log` | off | Include low-signal events (`simulateRobots`, `simulateChurch`, `updateMap`, `updateHistory`, `updateDate`), as in `run_sim.js`. |
-| `--intervene` | none | Intervention applied once at the branch point, before the snapshot (repeatable): `makeFire`, `makeFlood`, `makeTornado`, `makeEarthquake`, `makeMonster`, `makeMeltdown`, `makeFireBombs`, `demolishCoalPower`, `demolishNuclearPower`, `demolishPowerPlants`, `demolishAirport`. See [Interventions](#interventions). |
+| `--intervene` | none | Intervention applied in every continuation at the branch point, after the reseed, retried with another seed when it misses (repeatable): `makeFire`, `makeFlood`, `makeTornado`, `makeEarthquake`, `makeMonster`, `makeMeltdown`, `makeFireBombs`, `demolishCoalPower`, `demolishNuclearPower`, `demolishPowerPlants`, `demolishAirport`. See [Interventions](#interventions). |
 | `--progress` | off | One stderr line per finished continuation. |
 
 There is no `--log-every-tick`; exactly one stats row is emitted per turn.
@@ -58,7 +58,8 @@ run's worth of state at a time: reset on `begin`, finalize on `end`.
 ```json
 {"kind":"header","city":"haight","trunkSeed":42,"branchAt":1440,"horizon":480,
  "branchTick":23040,"endTick":30720,"seedLo":1,"seedHi":100,
- "disasters":true,"trunkOutput":true,"interventions":[]}
+ "disasters":true,"trunkOutput":true,"interventions":[],
+ "interventionMode":"per-continuation"}
 ```
 
 `interventions` lists `{"turn": S-1, "action": ...}` for each `--intervene`.
@@ -108,26 +109,36 @@ first stats rows share the same `cityTime`.
 
 ## Interventions
 
-Each `--intervene` action runs once, at the end of the trunk and before the
-heap snapshot, so every continuation starts from the same post-intervention
-state (same disaster location and strength) and only the RNG afterwards
-differs: a tornado's or monster's path, how a fire or flood spreads. This is
-the state `run_sim.js --at S-1:ACTION` reaches at the same tick, `branchTick`.
-The events it causes and then an `intervention` event are trunk lines
-(`"seed": null`) tagged tick `branchTick - 1`, turn `S-1`, so a `(S-1, H]`
+Each `--intervene` action runs in every continuation, right after the snapshot
+is restored and the RNG reseeded, so each continuation draws its own
+realisation (disaster location and strength, then how it spreads). The header
+says so with `"interventionMode": "per-continuation"`. The events it causes and
+then an `intervention` event are continuation lines tagged tick
+`branchTick - 1`, turn `S-1`, after the `begin` line, so a `(S-1, H]`
 resolution window counts only what follows the intervention.
 
 ```json
-{"kind":"event","seed":null,"tick":23039,"event":"intervention","cityTime":6279,
+{"kind":"event","seed":7,"tick":23039,"event":"intervention","cityTime":6279,
  "cityYear":2030,"cityMonth":9,"turn":1439,"action":"demolishAirport",
  "result":{"demolished":1}}
 ```
 
 Demolitions carry `result.demolished`. A disaster takes effect only if the
-engine sends its message during the call ("Flooding reported!" and so on). An
-intervention without effect (no river edge to flood, no nuclear plant to melt
-down, a monster or tornado already active, nothing to demolish) stops the run
-with an error on stderr and a nonzero exit, before any continuation runs.
+engine sends its message during the call ("Flooding reported!" and so on).
+When an intervention has no effect with branch seed `s`, the continuation is
+restored and retried with RNG seed `s + k*1000000` (k = 1, 2, ...); the lines
+of a missed attempt are dropped. The `begin` line records the seed that took
+effect and the ones that missed:
+
+```json
+{"kind":"begin","seed":7,"run":"continuation","fromTick":23040,"toTick":30720,
+ "interventionSeed":1000007,"missedSeeds":[7]}
+```
+
+After 100 misses for one branch seed (no river edge to flood, no nuclear plant
+to melt down, a monster or tornado already active, nothing to demolish) the run
+stops with an error on stderr and a nonzero exit. With `--intervene`, branch
+seeds must be below 1000000.
 
 ## Guarantees
 
